@@ -96,6 +96,61 @@ public:
     CATLASS_DEVICE
     ~BlockEpilogue() {}
 
+    __simd_vf__ inline void calcVec1OutVF(
+        __ubuf__ VElementOutput* vNewL1Addr, __ubuf__ VElementOutput* vOutAddr,
+        __ubuf__  float* vSrcAddr, __ubuf__ float* uSrcAddr, __ubuf__ float* gSrcAddr,
+        uint32_t mActualThisSubBlock, uint32_t nvActual
+    ) {
+        constexpr uint32_t oneRepeatSize = AscendC::GetVecLen() * 2 / sizeof(float);
+        uint16_t repeatOuterTimes = mActualThisSubBlock;
+        uint16_t repeatInnerTimes = nvActual / oneRepeatSize;
+
+        static constexpr AscendC::Reg::CastTrait castTraitFloatToHalfZero = {
+            AscendC::Reg::RegLayout::ZERO,
+            AscendC::Reg::SatMode::NO_SAT,
+            AscendC::Reg::MaskMergeMode::MERGING,
+            AscendC::RoundMode::CAST_RINT
+        };
+        static constexpr AscendC::Reg::CastTrait castTraitFloatToHalfOne = {
+            AscendC::Reg::RegLayout::ONE,
+            AscendC::Reg::SatMode::NO_SAT,
+            AscendC::Reg::MaskMergeMode::ZEROING,
+            AscendC::RoundMode::CAST_RINT
+        };
+
+        AscendC::Reg::RegTensor<float> vReg0;
+        AscendC::Reg::RegTensor<float> vReg1;
+        AscendC::Reg::RegTensor<float> uReg0;
+        AscendC::Reg::RegTensor<float> uReg1;
+        AscendC::Reg::RegTensor<float> gReg;
+        AscendC::Reg::RegTensor<float> subReg0;
+        AscendC::Reg::RegTensor<float> subReg1;
+        AscendC::Reg::RegTensor<float> mulReg0;
+        AscendC::Reg::RegTensor<float> mulReg1;
+        AscendC::Reg::RegTensor<VElementOutput> castReg;
+        AscendC::Reg::MaskReg maskFull32 = AscendC::Reg::CreateMask<float, AscendC::Reg::MaskPattern::ALL>();
+        AscendC::Reg::MaskReg maskFull16 = AscendC::Reg::CreateMask<half, AscendC::Reg::MaskPattern::ALL>();
+
+        for (uint16_t outIdx = 0; outIdx < repeatOuterTimes; ++outIdx) {
+            for (uint16_t inIdx = 0; inIdx < repeatInnerTimes; ++inIdx) {
+                uint32_t loadOffset = (outIdx * repeatInnerTimes + inIdx) * oneRepeatSize;
+                uint32_t storeOffset = inIdx * repeatOuterTimes * oneRepeatSize + outIdx * NZ_BLOCK_SIZE;
+                AscendC::Reg::LoadAlign<float, AscendC::Reg::LoadDist::DIST_DINTLV_B32>(vReg0, vReg1, vSrcAddr + loadOffset);
+                AscendC::Reg::LoadAlign<float, AscendC::Reg::LoadDist::DIST_DINTLV_B32>(uReg0, uReg1, uSrcAddr + loadOffset);
+                AscendC::Reg::LoadAlign<float, AscendC::Reg::LoadDist::DIST_BRC_B32>(gReg, gSrcAddr + outIdx);
+                AscendC::Reg::Sub(subReg0, uReg0, vReg0, maskFull32);
+                AscendC::Reg::Sub(subReg1, uReg1, vReg1, maskFull32);
+                AscendC::Reg::Mul(mulReg0, subReg0, gReg, maskFull32);
+                AscendC::Reg::Mul(mulReg1, subReg1, gReg, maskFull32);
+                AscendC::Reg::Cast<VElementOutput, float, castTraitFloatToHalfOne>(castReg, mulReg1, maskFull32);
+                AscendC::Reg::Cast<VElementOutput, float, castTraitFloatToHalfZero>(castReg, mulReg0, maskFull32);
+                __ubuf__ VElementOutput* storeAddr = vNewL1Addr + storeOffset;
+                AscendC::Reg::StoreAlign<VElementOutput, AscendC::Reg::DataCopyMode::DATA_BLOCK_COPY, AscendC::Reg::PostLiteral::POST_MODE_NORMAL>(storeAddr, castReg, repeatOuterTimes, 0, maskFull16);
+            }
+        }
+
+    }
+
     CATLASS_DEVICE
     void operator()(
         AscendC::GlobalTensor<VElementOutput> vnewOutput,
@@ -210,26 +265,15 @@ public:
 
         Arch::CrossCoreWaitFlag(cube1Done);
 
-        AscendC::Sub<float>(wsUbTensor, calcUbTensor, wsUbTensor, mActualThisSubBlock * nvActual);
-        AscendC::PipeBarrier<PIPE_V>();
+        calcVec1OutVF(
+            (__ubuf__ VElementOutput*)vNewDecayUbTensor.GetPhyAddr(), (__ubuf__ VElementOutput*)vNewOutputUbTensor.GetPhyAddr(),
+            (__ubuf__ float*)wsUbTensor.GetPhyAddr(), (__ubuf__ float*)calcUbTensor.GetPhyAddr(), (__ubuf__ float*)gUbTensor[mOffset].GetPhyAddr(), 
+            mActualThisSubBlock, nvActual
+        );
 
-        AscendC::Broadcast<float, 2, 1>(calcUbTensor, gUbTensor[gbrcRealStart], dstShape_, srcShape_, shareBuffer_);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID3 + pingpongFlag);
-
-        AscendC::Mul(calcUbTensor[gbrcEffStart*nvActual], wsUbTensor, calcUbTensor[gbrcEffStart*nvActual], mActualThisSubBlock * nvActual);
-        AscendC::PipeBarrier<PIPE_V>();
-
-        uint32_t nvLoops = vHeadDim / FLOAT_NUM_PER_REPEAT;
-        for (uint32_t nLoop = 0; nLoop < nvLoops; nLoop++) {
-            uint32_t castSrcOffset = gbrcEffStart * nvActual + nLoop * FLOAT_NUM_PER_REPEAT;
-            uint32_t castDstOffset = nLoop * mActualThisSubBlock * FLOAT_NUM_PER_REPEAT;
-            AscendC::Cast(vNewDecayUbTensor[castDstOffset], calcUbTensor[castSrcOffset], AscendC::RoundMode::CAST_RINT, FLOAT_NUM_PER_REPEAT, mActualThisSubBlock, {(uint16_t)mActualThisSubBlock, 1, 1, (uint8_t)(nvLoops * 8)});
-        }
-
-        AscendC::PipeBarrier<PIPE_V>();
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID3 + pingpongFlag);
 
         uint32_t ubToL1Loops = nvActual / SIZE_16_NUM_PER_C0;
         uint32_t mActualPadded = (mActual + NZ_BLOCK_SIZE - 1) / NZ_BLOCK_SIZE * NZ_BLOCK_SIZE;
@@ -245,6 +289,8 @@ public:
 
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
+        AscendC::Sub<float>(wsUbTensor, calcUbTensor, wsUbTensor, mActualThisSubBlock * nvActual);
+        AscendC::PipeBarrier<PIPE_V>();
         AscendC::Cast(vNewOutputUbTensor, wsUbTensor, AscendC::RoundMode::CAST_RINT, mActualThisSubBlock * nvActual);
         AscendC::PipeBarrier<PIPE_V>();
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
