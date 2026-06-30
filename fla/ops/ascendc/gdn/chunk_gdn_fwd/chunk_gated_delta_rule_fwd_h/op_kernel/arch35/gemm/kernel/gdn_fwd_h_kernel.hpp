@@ -321,8 +321,6 @@ public:
                 }
                 currStage ^= 0x01;
             }
-            // Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[0]);
-            // Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[1]);
 
         }
 
@@ -387,17 +385,10 @@ public:
 
             AscendC::SyncAll<false>();
 
-            // Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[0]);
-            // Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[1]);
-
             EpilogueGDNFwdHVnew epilogueGDNFwdHVnew(resource);
             EpilogueGDNFwdHUpdate epilogueGDNFwdHUpdate(resource);
             uint32_t pongBaseEvent = 4;
 
-            AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0); // preset v
-            AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0 + pongBaseEvent);
-            AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0); // preset v
-            AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0 + pongBaseEvent);
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1); // preset u
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pongBaseEvent);
             AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2); // preset h
@@ -424,7 +415,8 @@ public:
                         if (vec1Offsets.isInitialState) {
                             AscendC::LocalTensor<ElementHL1> l1H = (i == 0) ? l1HPing : l1HPong;
                             epilogueGDNFwdHUpdate.preload(
-                                l1H, vecBlockScheduler.vec2Done[i], vec1Offsets.isFinalState,
+                                l1H, gmH[vec1Offsets.hSrcOffset],
+                                vecBlockScheduler.vec2Done[i], useInitialState,
                                 kHeadDim, vHeadDim, (i == 0)
                             );
                         }
@@ -474,10 +466,6 @@ public:
                 currStage ^= 0x01;
             }
 
-            AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0); // preset v
-            AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0 + pongBaseEvent);
-            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0); // preset v
-            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0 + pongBaseEvent);
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1); // preset u
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pongBaseEvent);
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2); // preset h

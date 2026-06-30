@@ -86,8 +86,9 @@ public:
     CATLASS_DEVICE
     void preload(
         AscendC::LocalTensor<HElementOutput> l1H,
+        AscendC::GlobalTensor<HElementInput> hInput,
         Arch::CrossCoreFlag vec2Done,
-        bool isFinalState,
+        bool useInitialState,
         uint32_t kHeadDim,
         uint32_t vHeadDim,
         bool isPing
@@ -104,14 +105,40 @@ public:
 
         uint32_t pingpongFlag = isPing ? 0 : pongBaseEvent;
         AscendC::LocalTensor<HElementOutput> hUbToL1Tensor = isPing ? hUbToL1Tensor_ping : hUbToL1Tensor_pong;
-        HElementOutput zeroH = 0.0;
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
-        AscendC::Duplicate(hUbToL1Tensor, zeroH, mActualThisSubBlock * nActual);
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
-        AscendC::DataCopy(l1H[offsetH], hUbToL1Tensor, mActualThisSubBlock * nActual); // 全0buffer -> L1
-        Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec2Done);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1 + pingpongFlag);
+        if (useInitialState) {
+            uint32_t halfNDToNZLoops = vHeadDim / HALF_NUM_PER_REPEAT;
+            AscendC::DataCopyParams UBToL1Params;
+            uint32_t ubToL1Loops = vHeadDim / NZ_BLOCK_SIZE;
+            UBToL1Params.blockCount = ubToL1Loops;
+            UBToL1Params.blockLen = mActualThisSubBlock;
+            UBToL1Params.srcGap = 0;
+            UBToL1Params.dstGap = mActual - mActualThisSubBlock;
+
+            AscendC::GlobalTensor<HElementInput> hInputThisSubBlock = hInput[offsetH];
+            AscendC::LocalTensor<HElementOutput> hUbTensor = isPing ? hUbTensor_ping : hUbTensor_pong;
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2 + pingpongFlag);
+            AscendC::DataCopy(hUbTensor, hInputThisSubBlock, mActualThisSubBlock * nActual);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
+            AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID2 + pingpongFlag);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID2 + pingpongFlag);
+            AscendC::Copy(hUbToL1Tensor, hUbTensor, HALF_NUM_PER_REPEAT, mActualPerSubBlock, {(uint16_t)mActualPerSubBlock, 1, 1, (uint8_t)(halfNDToNZLoops * DATA_BLOCKS_PER_REPEAT)});
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+            uint32_t l1Addr = mOffset * NZ_BLOCK_SIZE;
+            AscendC::DataCopy(l1H[l1Addr], hUbToL1Tensor, UBToL1Params);
+            Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec2Done);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1 + pingpongFlag);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2 + pingpongFlag);
+        } else {
+            HElementOutput zeroH = 0.0;
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
+            AscendC::Duplicate(hUbToL1Tensor, zeroH, mActualThisSubBlock * nActual);
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+            AscendC::DataCopy(l1H[offsetH], hUbToL1Tensor, mActualThisSubBlock * nActual); // 全0buffer -> L1
+            Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec2Done);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1 + pingpongFlag);
+        }
     }
 
     __simd_vf__ inline void AddAndCastToNZNDVF(
@@ -213,10 +240,8 @@ public:
         AscendC::LocalTensor<float> glastUbTensor = isPing ? glastUbTensor_ping : glastUbTensor_pong;
 
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2 + pingpongFlag);
-        AscendC::DataCopy(hUbTensor, hInputThisSubBlock, mActualThisSubBlock * nActual);
-        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID2 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID2 + pingpongFlag);
 
+        AscendC::PipeBarrier<PIPE_V>();
         AscendC::Cast(calcUbTensor, hUbTensor, AscendC::RoundMode::CAST_NONE, mActualThisSubBlock * nActual);
         AscendC::PipeBarrier<PIPE_V>();
 
@@ -244,27 +269,44 @@ public:
 
         Arch::CrossCoreWaitFlag(cube2Done);
 
-        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
-        AddAndCastToNZNDVF(
-            (__ubuf__ HElementOutput*)hUbToL1Tensor.GetPhyAddr(), (__ubuf__ HElementOutput*)hUbTensor.GetPhyAddr(),
-            (__ubuf__ float*)calcUbTensor.GetPhyAddr(), (__ubuf__ float*)hUpdateUbTensor.GetPhyAddr(), 
-            mActualThisSubBlock * nActual, oneRepeatSize, repeatOuterTimes, repeatInnerTimes
-        );
+        if (isFinalState) {
+            AscendC::Add<float>(hUpdateUbTensor, calcUbTensor, hUpdateUbTensor, mActualThisSubBlock * nActual);
+            if constexpr(std::is_same<FinalStateElement, float>::value) {
+                AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID0 + pingpongFlag);
+                AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID0 + pingpongFlag);
+                AscendC::DataCopy(finalStateThisSubBlock, hUpdateUbTensor, mActualThisSubBlock * nActual);
+            } else {
+                AscendC::PipeBarrier<PIPE_V>();
+                AscendC::Cast(hUbTensor, hUpdateUbTensor, AscendC::RoundMode::CAST_RINT, mActualThisSubBlock * nActual);
+                AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2 + pingpongFlag);
+                AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2 + pingpongFlag);
+                AscendC::DataCopy(finalStateThisSubBlock, hUbTensor, mActualThisSubBlock * nActual);
+            }
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2 + pingpongFlag);
+        } else {
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
+            AddAndCastToNZNDVF(
+                (__ubuf__ HElementOutput*)hUbToL1Tensor.GetPhyAddr(), (__ubuf__ HElementOutput*)hUbTensor.GetPhyAddr(),
+                (__ubuf__ float*)calcUbTensor.GetPhyAddr(), (__ubuf__ float*)hUpdateUbTensor.GetPhyAddr(), 
+                mActualThisSubBlock * nActual, oneRepeatSize, repeatOuterTimes, repeatInnerTimes
+            );
 
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
-        uint32_t l1Addr = mOffset * NZ_BLOCK_SIZE;
-        AscendC::DataCopy(l1H[l1Addr], hUbToL1Tensor, UBToL1Params);
-        Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec2Done);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1 + pingpongFlag);
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID1 + pingpongFlag);
+            uint32_t l1Addr = mOffset * NZ_BLOCK_SIZE;
+            AscendC::DataCopy(l1H[l1Addr], hUbToL1Tensor, UBToL1Params);
+            Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec2Done);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1 + pingpongFlag);
 
-        AscendC::Add<float>(hUpdateUbTensor, calcUbTensor, hUpdateUbTensor, mActualThisSubBlock * nActual);
-        AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Cast(hUbTensor, hUpdateUbTensor, AscendC::RoundMode::CAST_RINT, mActualThisSubBlock * nActual);
-        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2 + pingpongFlag);
-        AscendC::DataCopy(hOutputThisSubBlock, hUbTensor, mActualThisSubBlock * nActual);
-        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2 + pingpongFlag);
+            AscendC::Add<float>(hUpdateUbTensor, calcUbTensor, hUpdateUbTensor, mActualThisSubBlock * nActual);
+            AscendC::PipeBarrier<PIPE_V>();
+            AscendC::Cast(hUbTensor, hUpdateUbTensor, AscendC::RoundMode::CAST_RINT, mActualThisSubBlock * nActual);
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2 + pingpongFlag);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2 + pingpongFlag);
+            AscendC::DataCopy(hOutputThisSubBlock, hUbTensor, mActualThisSubBlock * nActual);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID2 + pingpongFlag);
+        }
+
 
     }
 
