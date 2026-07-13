@@ -281,7 +281,7 @@ public:
 
     /// Perform a block-scoped matrix multiply-accumulate
     template <class TensorA, class TensorB, class TensorC, class TensorBias = EmptyClass>
-    CATLASS_DEVICE void operator()(TensorA &tensorA, TensorB &tensorB, TensorC &tensorC, GemmCoord const &actualShape)
+    CATLASS_DEVICE void operator()(TensorA &tensorA, TensorB &tensorB, TensorC &tensorC, GemmCoord const &actualShape, Arch::CrossCoreFlag vecDone)
     {
         using CopyGmToL1A = typename TileCopy_::template CopyGmToL1A<TensorA>;
         // using CopyGmToL1B = typename TileCopy_::template CopyGmToL1B<TensorB>;
@@ -319,6 +319,8 @@ public:
         auto tensorL1A = tla::MakeTensor(l1ATensorList[l1AListId], L1A_LAYOUT, Arch::PositionL1{});
         auto tensorTileA = GetTileA(tensorA, 0, 0, mBlockActual, kL1Actual);
         copyGmToL1A(tensorL1A, tensorTileA);
+        Arch::CrossCoreWaitFlag(vecDone);
+
         AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(l1AEventList[l1AListId]);
 
         // load first matrix B tile from GM to L1

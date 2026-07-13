@@ -248,7 +248,7 @@ public:
             uint32_t coreNum = AscendC::GetBlockNum();
 
             BlockMmadWH blockMmadWH(resource, l1Offset);
-            BlockMmadKV blockMmadKV(resource, l1Offset);
+            BlockMmadKV blockMmadKV(resource, l1Offset + 128 * 1024);
 
             auto wLayout = tla::MakeLayout<ElementW, LayoutW>(shapeBatch * kNumHead * cubeBlockScheduler.totalTokens, kHeadDim);
             auto hLayout = tla::MakeLayout<ElementHL1, LayoutHL1>(kHeadDim, vHeadDim);
@@ -258,6 +258,7 @@ public:
 
             AscendC::SyncAll<false>();
             uint32_t currStage = 0; // 0: C1, 1: C2
+            blockMmadWH.preSetFlags();
             while (cubeBlockScheduler.isRunning) {
                 if (currStage == 0) {
                     /* C1: v_work = w @ h[i] */
@@ -269,7 +270,6 @@ public:
                         }
 
                         const GDNFwdHOffsets& cube1Offsets = cubeBlockScheduler.GetCurTaskOffsets(stream);
-                        Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[i]);
                         auto vLayout = tla::MakeLayout<ElementVWork, LayoutV>(cube1Offsets.blockTokens, vHeadDim);
                         int64_t cube1OffsetW = cube1Offsets.wOffset;
                         int64_t cube1OffsetH = cube1Offsets.hSrcOffset;
@@ -282,10 +282,7 @@ public:
                         GemmCoord cube1Shape {cube1Offsets.blockTokens, vHeadDim, kHeadDim};
                         auto tensorBlockW = GetTile(tensorW, tla::MakeCoord(0, 0), tla::MakeShape(cube1Shape.m(), cube1Shape.k()));
                         auto tensorBlockH = GetTile(tensorH, tla::MakeCoord(0, 0), tla::MakeShape(cube1Shape.k(), cube1Shape.n()));
-
-                        blockMmadWH.preSetFlags();
-                        blockMmadWH(tensorBlockW, tensorH, tensorV, cube1Shape);
-                        blockMmadWH.finalWaitFlags();
+                        blockMmadWH(tensorBlockW, tensorH, tensorV, cube1Shape, cubeBlockScheduler.vec2Done[i]);
                         Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(cubeBlockScheduler.cube1Done);
                     }
                 } else {
@@ -296,7 +293,6 @@ public:
                             continue;
                         }
                         const GDNFwdHOffsets& cube2Offsets = cubeBlockScheduler.GetCurTaskOffsets(stream);
-                        Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done);
 
                         if (cubeBlockScheduler.NeedProcessStage2(stream)) {
                             // step 3: h[i+1] = k.T @ v_work
@@ -311,16 +307,16 @@ public:
                             auto tensorVwork = tla::MakeTensor(l1VUpdate, vUpdateLayout, Catlass::Arch::PositionL1{});
                             GemmCoord cube2Shape{kHeadDim, vHeadDim, cube2Offsets.blockTokens};
                             auto tensorBlockK = GetTile(tensorK, tla::MakeCoord(0, 0), tla::MakeShape(cube2Shape.m(), cube2Shape.k()));
-
-                            blockMmadKV.preSetFlags();
-                            blockMmadKV(tensorBlockK, tensorVwork, tensorHwork, cube2Shape);
-                            blockMmadKV.finalWaitFlags();
+                            blockMmadKV(tensorBlockK, tensorVwork, tensorHwork, cube2Shape, cubeBlockScheduler.vec1Done);
+                        } else {
+                            Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done);
                         }
                         Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(cubeBlockScheduler.cube2Done);
                     }
                 }
                 currStage ^= 0x01;
             }
+            blockMmadKV.finalWaitFlags();
 
         }
 
