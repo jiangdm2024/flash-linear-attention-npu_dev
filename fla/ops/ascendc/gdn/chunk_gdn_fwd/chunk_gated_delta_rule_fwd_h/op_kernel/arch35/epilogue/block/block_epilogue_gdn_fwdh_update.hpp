@@ -229,13 +229,13 @@ public:
         AscendC::SetFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
         AscendC::WaitFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID2 + pingpongFlag);
-        Vec2PreVF(
-            (__ubuf__ float*)calcUbTensor.GetPhyAddr(), (__ubuf__ HElementOutput*)hUbTensor.GetPhyAddr(), muls,
-            mActualThisSubBlock * nActual, oneRepeatSize, repeatOuterTimes, repeatInnerTimes
-        );
+
+        AscendC::Cast(calcUbTensor, hUbTensor, AscendC::RoundMode::CAST_NONE, mActualThisSubBlock * nActual);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Muls(calcUbTensor, calcUbTensor, muls, mActualThisSubBlock * nActual);
+        AscendC::PipeBarrier<PIPE_V>();
 
         Arch::CrossCoreWaitFlag(cube2Done);
-        AscendC::PipeBarrier<PIPE_V>();
 
         if (isFinalState) {
             if constexpr(std::is_same<FinalStateElement, float>::value) {
