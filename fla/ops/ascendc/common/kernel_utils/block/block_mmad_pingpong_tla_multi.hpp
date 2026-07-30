@@ -390,7 +390,7 @@ public:
         } else {
             copyGmToL1A(tensorL1A, tensorTileA);
         }
-        // Arch::CrossCoreWaitFlag(vecDone);
+        Arch::CrossCoreWaitFlag(vecDone);
         AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(l1AEventList[l1AListId]);
 
         // load first matrix B tile from GM to L1

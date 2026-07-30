@@ -246,7 +246,6 @@ public:
                             continue;
                         }
 
-                        Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[i]);
                         const GDNFwdHOffsets& cube1Offsets = cubeBlockScheduler.GetCurTaskOffsets(stream);
                         auto vLayout = tla::MakeLayout<ElementVWork, LayoutV>(cube1Offsets.blockTokens, vHeadDim);
                         int64_t cube1OffsetW = cube1Offsets.wOffset;
@@ -273,7 +272,6 @@ public:
 
                         if (cubeBlockScheduler.NeedProcessStage2(stream)) {
                             // step 3: h[i+1] = k.T @ v_work
-                            Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done);
                             int64_t cube2OffsetK = cube2Offsets.wkOffset;
                             int64_t cube2OffsetVwork = cube2Offsets.vWorkOffset;
                             int64_t cube2OffsetH = cube2Offsets.hWorkOffset;
