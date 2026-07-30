@@ -303,7 +303,7 @@ public:
         AscendC::Exp(gUbTensor, gUbTensor, mActual);
         AscendC::PipeBarrier<PIPE_V>();
 
-        Arch::CrossCoreWaitFlag(cube1Done);
+        // Arch::CrossCoreWaitFlag(cube1Done);
 
         if (storeFinalState && isInitialState && std::is_same<FinalStateElement, float>::value) {
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0 + pingpongFlag);
@@ -321,7 +321,7 @@ public:
 
         AscendC::DataCopy(vnewdecayOutputThisSubBlock, vNewDecayUbTensor, mActualThisSubBlock * nvActual);
 
-        // Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec1Done);
+        Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vec1Done);
 
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);

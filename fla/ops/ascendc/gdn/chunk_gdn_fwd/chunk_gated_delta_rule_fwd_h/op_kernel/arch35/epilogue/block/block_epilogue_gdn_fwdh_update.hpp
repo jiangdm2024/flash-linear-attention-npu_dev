@@ -235,7 +235,7 @@ public:
         AscendC::Muls(calcUbTensor, calcUbTensor, muls, mActualThisSubBlock * nActual);
         AscendC::PipeBarrier<PIPE_V>();
 
-        Arch::CrossCoreWaitFlag(cube2Done);
+        // Arch::CrossCoreWaitFlag(cube2Done);
 
         if (isFinalState) {
             if constexpr(std::is_same<FinalStateElement, float>::value) {
