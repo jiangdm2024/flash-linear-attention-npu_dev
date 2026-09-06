@@ -318,6 +318,24 @@ private:
             CopyGmToL1Q{}(tensorL1Q, blockQ);
             CopyGmToL1K{}(tensorL1K, blockK);
             SetFlag<HardEvent::MTE2_MTE1>(qkEvent);
+        }
+
+        // Queue H behind Q/K so MTE2 stays active while MTE1 starts consuming Q/K.
+        WaitFlag<HardEvent::MTE1_MTE2>(hEvent);
+        const int64_t hOffset = ChunkFwdOHOffset(tiling_, loc, hv);
+        using LayoutTagL1H = typename TileCopyQH::LayoutTagL1B;
+        auto layoutHGm = tla::MakeLayout<Element, LayoutCM>(kK, kV);
+        auto tensorHGm = tla::MakeTensor(hGm_[hOffset], layoutHGm, Catlass::Arch::PositionGM{});
+        auto blockH = GetTile(tensorHGm, tla::MakeCoord(0, 0), tla::MakeShape(kK, kV));
+        using CopyGmToL1H = typename TileCopyQH::template CopyGmToL1B<decltype(blockH)>;
+        LocalTensor<Element> l1H =
+            resource_.l1Buf.template GetBufferByByte<Element>(ChunkFwdOL1HOffset(hL1Slot));
+        auto layoutL1H = tla::MakeLayout<Element, LayoutTagL1H>(kK, kV);
+        auto tensorL1H = tla::MakeTensor(l1H, layoutL1H, Catlass::Arch::PositionL1{});
+        CopyGmToL1H{}(tensorL1H, blockH);
+        SetFlag<HardEvent::MTE2_MTE1>(hEvent);
+
+        if (loadQK) {
             WaitFlag<HardEvent::MTE2_MTE1>(qkEvent);
         }
 
@@ -370,21 +388,6 @@ private:
         QkTileMmad{}(tileQktL0C, tileQktL0A, tileQktL0B, m, m, kK, true, 0);
         SetFlag<HardEvent::M_MTE1>(L0AEvent(qktASlot));
         SetFlag<HardEvent::M_MTE1>(L0BEvent(qktBSlot));
-
-        // Load H to L1 while Q @ K^T runs on M/FIX.
-        WaitFlag<HardEvent::MTE1_MTE2>(hEvent);
-        const int64_t hOffset = ChunkFwdOHOffset(tiling_, loc, hv);
-        using LayoutTagL1H = typename TileCopyQH::LayoutTagL1B;
-        auto layoutHGm = tla::MakeLayout<Element, LayoutCM>(kK, kV);
-        auto tensorHGm = tla::MakeTensor(hGm_[hOffset], layoutHGm, Catlass::Arch::PositionGM{});
-        auto blockH = GetTile(tensorHGm, tla::MakeCoord(0, 0), tla::MakeShape(kK, kV));
-        using CopyGmToL1H = typename TileCopyQH::template CopyGmToL1B<decltype(blockH)>;
-        LocalTensor<Element> l1H =
-            resource_.l1Buf.template GetBufferByByte<Element>(ChunkFwdOL1HOffset(hL1Slot));
-        auto layoutL1H = tla::MakeLayout<Element, LayoutTagL1H>(kK, kV);
-        auto tensorL1H = tla::MakeTensor(l1H, layoutL1H, Catlass::Arch::PositionL1{});
-        CopyGmToL1H{}(tensorL1H, blockH);
-        SetFlag<HardEvent::MTE2_MTE1>(hEvent);
 
         // Publish Q @ K^T from L0C to the owner AIV's A_raw UB slot.
         auto qktLayout = tla::MakeLayoutL0C(m, m);
