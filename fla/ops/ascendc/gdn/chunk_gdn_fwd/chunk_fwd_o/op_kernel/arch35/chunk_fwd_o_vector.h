@@ -77,11 +77,13 @@ __simd_vf__ inline void Stage1Gate64VF(__ubuf__ float *gateAAddr, __ubuf__ float
     }
 }
 
+template <bool FullChunk>
 __simd_vf__ inline void Stage3Gate64VF(__ubuf__ bfloat16_t *aPrimeAddr, __ubuf__ float *oSAddr,
                                       __ubuf__ float *aRawAddr, __ubuf__ float *gateAAddr,
                                       __ubuf__ float *gateOAddr, uint16_t validRows)
 {
     constexpr uint16_t kBt = static_cast<uint16_t>(CHUNK_FWD_O_A5_BT);
+    const uint16_t activeRows = FullChunk ? kBt : validRows;
     RegTensor<float> zeroReg;
     MaskReg floatMask = CreateMask<float, MaskPattern::ALL>();
     Duplicate(zeroReg, 0.0f, floatMask);
@@ -110,8 +112,8 @@ __simd_vf__ inline void Stage3Gate64VF(__ubuf__ bfloat16_t *aPrimeAddr, __ubuf__
         RegTensor<bfloat16_t> aPrimeBf16Reg2;
         RegTensor<bfloat16_t> aPrimeBf16Reg3;
         uint16_t rowLoop = 0;
-        const uint16_t rowLoopCount = validRows / 4U;
-        const uint16_t tailLoopCount = validRows % 4U;
+        const uint16_t rowLoopCount = activeRows / 4U;
+        const uint16_t tailLoopCount = activeRows % 4U;
         const uint16_t tailRowBase = rowLoopCount * 4U;
         uint16_t rowBase = 0;
         uint32_t rowOffset0 = 0;
@@ -179,64 +181,35 @@ __simd_vf__ inline void Stage3Gate64VF(__ubuf__ bfloat16_t *aPrimeAddr, __ubuf__
         }
 
         Cast<bfloat16_t, float, CHUNK_FWD_O_FP32_TO_B16_PACK>(aPrimeBf16Reg0, zeroReg, floatMask);
-        const uint16_t invalidRowCount = static_cast<uint16_t>(kBt - validRows);
+        const uint16_t invalidRowCount = static_cast<uint16_t>(kBt - activeRows);
         for (rowLoop = 0; rowLoop < invalidRowCount; ++rowLoop) {
-            rowBase = static_cast<uint16_t>(validRows + rowLoop);
+            rowBase = static_cast<uint16_t>(activeRows + rowLoop);
             rowOffset0 = static_cast<uint32_t>(rowBase) * kBt;
             StoreAlign<bfloat16_t, StoreDist::DIST_PACK_B32>(aPrimeAddr + rowOffset0, aPrimeBf16Reg0, floatMask);
         }
     }
 
-    // Phase 2 handles two rows per loop while explicitly reusing one row's registers.
-    RegTensor<float> oSReg00;
-    RegTensor<float> oSReg01;
+    // Phase 2 keeps one row and its two fixed V tiles in nested hardware loops.
+    RegTensor<float> oSReg;
     RegTensor<float> gateOVectorReg;
     RegTensor<float> gateORowReg0;
     RegTensor<uint32_t> rowIndexReg0;
     LoadAlign(gateOVectorReg, gateOAddr);
 
-    const uint16_t validRowPairCount = validRows / 2U;
-    for (uint16_t rowPair = 0; rowPair < validRowPairCount; ++rowPair) {
-        const uint16_t row0 = static_cast<uint16_t>(rowPair * 2U);
-        const uint16_t row1 = static_cast<uint16_t>(row0 + 1U);
-        const uint32_t offset00 = static_cast<uint32_t>(row0) * CHUNK_FWD_O_A5_V;
-        const uint32_t offset01 = offset00 + kBt;
-        const uint32_t offset10 = static_cast<uint32_t>(row1) * CHUNK_FWD_O_A5_V;
-        const uint32_t offset11 = offset10 + kBt;
-
-        Duplicate(rowIndexReg0, static_cast<uint32_t>(row0), floatMask);
+    constexpr uint16_t kTilesPerRow = static_cast<uint16_t>(CHUNK_FWD_O_A5_V / CHUNK_FWD_O_A5_BT);
+    for (uint16_t row = 0; row < activeRows; ++row) {
+        Duplicate(rowIndexReg0, static_cast<uint32_t>(row), floatMask);
         Gather(gateORowReg0, gateOVectorReg, rowIndexReg0);
-        LoadAlign(oSReg00, oSAddr + offset00);
-        LoadAlign(oSReg01, oSAddr + offset01);
-        Mul(oSReg00, oSReg00, gateORowReg0, floatMask);
-        Mul(oSReg01, oSReg01, gateORowReg0, floatMask);
-        StoreAlign(oSAddr + offset00, oSReg00, floatMask);
-        StoreAlign(oSAddr + offset01, oSReg01, floatMask);
-
-        Duplicate(rowIndexReg0, static_cast<uint32_t>(row1), floatMask);
-        Gather(gateORowReg0, gateOVectorReg, rowIndexReg0);
-        LoadAlign(oSReg00, oSAddr + offset10);
-        LoadAlign(oSReg01, oSAddr + offset11);
-        Mul(oSReg00, oSReg00, gateORowReg0, floatMask);
-        Mul(oSReg01, oSReg01, gateORowReg0, floatMask);
-        StoreAlign(oSAddr + offset10, oSReg00, floatMask);
-        StoreAlign(oSAddr + offset11, oSReg01, floatMask);
+        for (uint16_t tile = 0; tile < kTilesPerRow; ++tile) {
+            const uint32_t offset = static_cast<uint32_t>(row) * CHUNK_FWD_O_A5_V +
+                                    static_cast<uint32_t>(tile) * kBt;
+            LoadAlign(oSReg, oSAddr + offset);
+            Mul(oSReg, oSReg, gateORowReg0, floatMask);
+            StoreAlign(oSAddr + offset, oSReg, floatMask);
+        }
     }
 
-    if ((validRows & 1U) != 0U) {
-        const uint32_t offset0 = static_cast<uint32_t>(validRows - 1U) * CHUNK_FWD_O_A5_V;
-        const uint32_t offset1 = offset0 + kBt;
-        Duplicate(rowIndexReg0, static_cast<uint32_t>(validRows - 1U), floatMask);
-        Gather(gateORowReg0, gateOVectorReg, rowIndexReg0);
-        LoadAlign(oSReg00, oSAddr + offset0);
-        LoadAlign(oSReg01, oSAddr + offset1);
-        Mul(oSReg00, oSReg00, gateORowReg0, floatMask);
-        Mul(oSReg01, oSReg01, gateORowReg0, floatMask);
-        StoreAlign(oSAddr + offset0, oSReg00, floatMask);
-        StoreAlign(oSAddr + offset1, oSReg01, floatMask);
-    }
-
-    for (uint16_t row = validRows; row < kBt; ++row) {
+    for (uint16_t row = activeRows; row < kBt; ++row) {
         const uint32_t offset0 = static_cast<uint32_t>(row) * CHUNK_FWD_O_A5_V;
         StoreAlign(oSAddr + offset0, zeroReg, floatMask);
         StoreAlign(oSAddr + offset0 + kBt, zeroReg, floatMask);
@@ -343,7 +316,6 @@ public:
             streamSlot_ = 0U;
             for (int64_t headOffset = 0; headOffset < taskCount; ++headOffset) {
                 const uint32_t ownerSubBlock = static_cast<uint32_t>(headOffset % 2);
-                Catlass::Arch::CrossCoreWaitFlag(cubeToVecFlag_);
                 if (ownerSubBlock == subBlockIdx) {
                     LocalTensor<float> gateO =
                         ubBuf_.GetWithOffset<float>(bt, ChunkFwdOGateOOffset(streamSlot_));
@@ -356,15 +328,25 @@ public:
                     LocalTensor<bfloat16_t> aPrimeBf16 =
                         ubBuf_.GetWithOffset<bfloat16_t>(matrixElems,
                                                          ChunkFwdOAPrimeBf16Offset(streamSlot_));
+                    Catlass::Arch::CrossCoreWaitFlag(cubeToVecFlag_);
                     WaitFlag<HardEvent::MTE3_V>(mte3ToVStream_[streamSlot_]);
-                    PipeBarrier<PIPE_V>();
-                    AscendC::VF_CALL<Stage3Gate64VF>(
-                        reinterpret_cast<__ubuf__ bfloat16_t *>(aPrimeBf16.GetPhyAddr()),
-                        reinterpret_cast<__ubuf__ float *>(oSPrime.GetPhyAddr()),
-                        reinterpret_cast<__ubuf__ float *>(aRaw.GetPhyAddr()),
-                        reinterpret_cast<__ubuf__ float *>(gateA.GetPhyAddr()),
-                        reinterpret_cast<__ubuf__ float *>(gateO.GetPhyAddr()),
-                        static_cast<uint16_t>(loc.chunkLen));
+                    if (loc.chunkLen == bt) {
+                        AscendC::VF_CALL<Stage3Gate64VF<true>>(
+                            reinterpret_cast<__ubuf__ bfloat16_t *>(aPrimeBf16.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(oSPrime.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(aRaw.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(gateA.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(gateO.GetPhyAddr()),
+                            static_cast<uint16_t>(loc.chunkLen));
+                    } else {
+                        AscendC::VF_CALL<Stage3Gate64VF<false>>(
+                            reinterpret_cast<__ubuf__ bfloat16_t *>(aPrimeBf16.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(oSPrime.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(aRaw.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(gateA.GetPhyAddr()),
+                            reinterpret_cast<__ubuf__ float *>(gateO.GetPhyAddr()),
+                            static_cast<uint16_t>(loc.chunkLen));
+                    }
                     SetFlag<HardEvent::V_MTE3>(vToMte3Stream_[streamSlot_]);
                     WaitFlag<HardEvent::V_MTE3>(vToMte3Stream_[streamSlot_]);
 
@@ -378,6 +360,8 @@ public:
 
                     SetFlag<HardEvent::MTE3_V>(mte3ToVStream_[streamSlot_]);
                     streamSlot_ ^= 1U;
+                } else {
+                    Catlass::Arch::CrossCoreWaitFlag(cubeToVecFlag_);
                 }
                 Catlass::Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecToCubeFlag_);
             }
