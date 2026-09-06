@@ -2,7 +2,8 @@
 
 本目录保存 `flash-linear-attention-npu` 仓内 Ascend C 算子的 ATK 单算子验证工程。
 所有精度、性能、确定性、内存检测和用例生成动作都通过 ATK 发起；公共脚本只负责拼装
-ATK 命令，不在脚本内导出 `PYTHONPATH`。
+ATK 命令，不在脚本内导出 `PYTHONPATH`。本文件维护 ATK 资产、执行和结果记录，不负责值域校准
+或精度定位。
 
 ## 目录结构
 
@@ -51,16 +52,8 @@ ATK 运行产生的 `atk_output/`、`result/`、profiling、sanitizer 日志、X
 
 ## 用例规模与覆盖
 
-ATK 功能和精度用例以可达逻辑分支为单位设计。每个逻辑分支至少建立一个能够独立归因的最小
-代表用例；仅由多个条件组合触发的分支使用最小必要组合。算子 README 的逻辑分支覆盖表逐项
-记录对应 case id，使分支错误在本用例中占有足够比例，不被大 Tensor 的整体匹配率稀释。
-大 shape 或大量重复用例只在性能、资源压力或特定极限场景需要时单独加入。
-
-每个独立精度用例维护至少 3 个固定随机种子，shape、dtype、属性和有效区域在不同种子之间保持
-一致。算子开发完成后的最后验收将每个精度用例与其全部固定种子形成 `(case, seed)` 组合并全部
-执行；只有所有组合均通过，才能归档算子精度通过结论。精度相关改动采用相同的全组合要求；日常
-精度看护在保持全部逻辑分支覆盖的前提下，按固定顺序轮换种子。算子 README 记录种子集合和轮换
-方式，case 元数据与测试结果记录实际使用的种子，使任何失败都能按相同输入复现。
+ATK 只执行已固化的精度基线。执行前，接口、CPU 标杆、输入生成器和混合容差必须与校准记录
+一致，JSON 使用其中的值域、有效区域和固定随机种子。本节只维护用例规模和覆盖维度。
 
 `atk_<op_name>.json` 中的“全部用例”是指已设计的逻辑分支覆盖用例全部执行，不表示必须生成
 大量 CASE。`atk_<op_name>_perf.json` 使用用户在算子开发开始时提供的模型 case，和功能精度
@@ -87,7 +80,7 @@ CPU 精度对比。
 
 | 文件 | 来源 | 完整条件 |
 | --- | --- | --- |
-| `atk_<op>.json` | `gen_cases` 生成的精度候选用例经筛选、补充后形成 | 每个可达逻辑分支具有独立最小用例及全部固定种子，并覆盖适用的正常、边界和异常场景 |
+| `atk_<op>.json` | `gen_cases` 生成的精度候选用例经筛选、补充后形成 | 每个可达逻辑分支具有独立最小用例，每个精度用例至少包含 3 个固定种子，并覆盖适用的正常、边界和异常场景 |
 | `atk_<op>_perf.json` | 用户在算子开发开始时提供的模型 case | 每个模型 case 均保留原始 shape、dtype、属性和目标 SoC；存在性能目标时逐 case 记录基线、目标和统计方式 |
 | `atk_<op>_mss.json` | 根据设计和实现中的全部可达 TilingKey 人工构造 | 每个可达 TilingKey 至少有一个最小代表用例，并覆盖该 key 下与内存、同步或复用有关的关键路径 |
 
@@ -189,6 +182,8 @@ bash tests/atk/run_test_cpu.sh -op=causal_conv1d
 
 ## 测试动作
 
+### 全量精度执行
+
 精度与 NaN 检测显式启动本机 NPU DUT 节点和 CPU 高精度 golden 节点；CPU 节点不再
 提供同精度参考，精度标准统一为 `mixed_tolerance_bm`：
 
@@ -200,11 +195,15 @@ bash tests/atk/run_test_cpu.sh -op=<op_name> -scope=accuracy
 三路双标杆，精度入口为该算子 `README.md` 中的 `scripts/run_matrix.sh`；统一脚本仍用于其
 性能、确定性和 mssanitizer。
 
+### 性能执行
+
 性能测试使用 ATK `performance_device`：
 
 ```bash
 bash tests/atk/run_test_cpu.sh -op=<op_name> -scope=performance
 ```
+
+### 确定性执行
 
 确定性验证使用 ATK `accuracy_dc`：
 
@@ -212,11 +211,15 @@ bash tests/atk/run_test_cpu.sh -op=<op_name> -scope=performance
 bash tests/atk/run_test_cpu.sh -op=<op_name> -scope=determinism
 ```
 
+### 内存检测执行
+
 内存检测由 `mssanitizer` 包裹 ATK `run` 任务：
 
 ```bash
 bash tests/atk/run_test_cpu.sh -op=<op_name> -scope=mssanitizer
 ```
+
+### 精度候选用例生成
 
 精度候选用例生成通过 ATK `case` 执行：
 
@@ -246,9 +249,8 @@ bash tests/atk/run_test_cpu.sh -op=<op_name> -scope=gen_cases
 
 正式验收前，根据用户模型 case 准备 `_perf.json`，根据全部可达 TilingKey 准备 `_mss.json`，
 并在算子 ATK README 中完成三类映射。正式验收时固定代码、CPU 标杆、三份测试文件和构建结果，
-不设置 case 范围，对每个受影响算子执行 `all`；其中精度阶段必须执行全部 `(case, seed)` 组合。
-ATK 之外需要补充的验证由
-[`docs/agents/05-operator-testing.md`](../../docs/agents/05-operator-testing.md) 的验证路由确定。
+不设置 case 范围，对每个受影响算子执行 `all`；精度阶段必须执行全部 `(case, seed)` 组合，所有
+组合均通过后才能判定精度验收通过。
 
 ## 算子索引
 
