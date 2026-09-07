@@ -250,9 +250,9 @@ public:
 
     __aicore__ inline ChunkFwdOA5VectorProcess(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h, GM_ADDR g,
                                                GM_ADDR cuSeqlens, GM_ADDR chunkOffsets, GM_ADDR o, GM_ADDR workspace)
-        : q_(q), k_(k), v_(v), h_(h), g_(g), cuSeqlens_(cuSeqlens), chunkOffsets_(chunkOffsets), o_(o),
-          workspace_(workspace)
+        : q_(q), k_(k), v_(v), h_(h), g_(g), cuSeqlens_(cuSeqlens), chunkOffsets_(chunkOffsets), o_(o)
     {
+        (void)workspace;
     }
 
     __aicore__ inline void Init(const ChunkFwdOTilingData &tiling, TPipe *pipe)
@@ -292,8 +292,6 @@ public:
             ChunkFwdOResolveChunkLoc(cuSeqlens_, chunkOffsets_, tiling_, loopIdx, loc);
             const int64_t remaining = tiling_.vNumHead - hvBase;
             const int64_t taskCount = remaining < tiling_.taskGroupSize ? remaining : tiling_.taskGroupSize;
-            const int64_t groupRound = ChunkFwdOGroupRound(groupTaskIdx, coreNum);
-
             // Stage 1: prepare gate_o/gate_A for every owner HEAD. The
             // producer/consumer events stay at the exact transfer site.
             streamSlot_ = 0U;
@@ -311,7 +309,7 @@ public:
 
             // Stage 3: consume one Stage 2 ready per HEAD. Both subblocks
             // participate in the handshake; only the owner executes the
-            // VF and writes A-prime to GM.
+            // VF and writes A-prime directly to Stage 4's zN L1 slot.
             // Select the first Stage3 ping-pong UB slot for this task group.
             streamSlot_ = 0U;
             for (int64_t headOffset = 0; headOffset < taskCount; ++headOffset) {
@@ -350,14 +348,19 @@ public:
                     SetFlag<HardEvent::V_MTE3>(vToMte3Stream_[streamSlot_]);
                     WaitFlag<HardEvent::V_MTE3>(vToMte3Stream_[streamSlot_]);
 
-                    const uint32_t aivCoreIdx = AscendC::GetBlockIdx() / 2U;
-                    GM_ADDR aPrimeAddr =
-                        ChunkFwdOAPrimeGmOffset(workspace_, tiling_, aivCoreIdx, groupRound, headOffset);
-                    GlobalTensor<bfloat16_t> aPrimeGm;
-                    aPrimeGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t *>(aPrimeAddr));
-                    DataCopyExtParams aPrimeCopyParams{1, CHUNK_FWD_O_APRIME_SLOT_BYTES, 0, 0, 0};
-                    DataCopyPad(aPrimeGm, aPrimeBf16, aPrimeCopyParams);
-
+                    LocalTensor<bfloat16_t> l1APrime =
+                        resource_.l1Buf.template GetBufferByByte<bfloat16_t>(
+                            ChunkFwdOL1APrimeOffset(static_cast<uint32_t>(headOffset)));
+                    DataCopyParams aPrimeL1CopyParams;
+                    aPrimeL1CopyParams.blockCount = bt;
+                    aPrimeL1CopyParams.blockLen = 1;
+                    aPrimeL1CopyParams.srcGap = bt / 16U - 1U;
+                    aPrimeL1CopyParams.dstGap = 0;
+                    for (uint32_t colBlock = 0; colBlock < bt / 16U; ++colBlock) {
+                        const uint32_t dstOffset = colBlock * bt * 16U;
+                        const uint32_t srcOffset = colBlock * 16U;
+                        DataCopy(l1APrime[dstOffset], aPrimeBf16[srcOffset], aPrimeL1CopyParams);
+                    }
                     SetFlag<HardEvent::MTE3_V>(mte3ToVStream_[streamSlot_]);
                     streamSlot_ ^= 1U;
                 } else {
@@ -477,11 +480,11 @@ private:
     GM_ADDR cuSeqlens_;
     GM_ADDR chunkOffsets_;
     GM_ADDR o_;
-    GM_ADDR workspace_;
     ChunkFwdOTilingData tiling_{};
     TPipe *pipe_ = nullptr;
 
     TBuf<TPosition::VECCALC> ubBuf_;
+    Catlass::Arch::Resource<ArchTag> resource_;
     GlobalTensor<bfloat16_t> oGm_;
     uint32_t streamSlot_ = 0;
     TEventID mte2ToV_[BANK_COUNT_2];
