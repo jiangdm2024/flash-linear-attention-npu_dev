@@ -62,6 +62,7 @@ __aicore__ inline void ChunkGatedDeltaRuleFwdHLaunchTyped(
                                                          bool useGk, bool useG)
 {
     using WorkspaceT = float;
+    constexpr uint32_t vDim = tla::get<1>(typename TileShapes::L1TileShape{});
     if (useGk) {
         if (useG) {
             ChunkGatedDeltaRuleFwdHKernelImpl<DataT, GateT, StateT, WorkspaceT, TileShapes, true, true, useExp2>(
@@ -71,7 +72,7 @@ __aicore__ inline void ChunkGatedDeltaRuleFwdHLaunchTyped(
                 k, w, u, g, gk, inital_state, cu_seqlens, chunk_indices, h, v_new, final_state, tiling, user);
         }
     } else {
-        if (TILING_KEY_IS(1)) {
+        if constexpr (vDim == 128) {
             ChunkGatedDeltaRuleFwdHKernelPreloadImpl<DataT, GateT, StateT, WorkspaceT, TileShapes, false, true, useExp2>(
                 k, w, u, g, gk, inital_state, cu_seqlens, chunk_indices, h, v_new, final_state, tiling, user);
         } else {
