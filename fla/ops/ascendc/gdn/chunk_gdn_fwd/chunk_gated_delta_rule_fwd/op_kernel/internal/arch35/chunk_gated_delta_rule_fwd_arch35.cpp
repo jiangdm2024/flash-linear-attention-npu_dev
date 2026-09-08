@@ -344,29 +344,8 @@ __aicore__ inline void RunPhase6(
     }
 
     WritePublicCumsumRows(gCumsumBht, gCumsumBth, cuSeqlens, chunkIndices, coefficient);
-    // Phase6 host tiling fixes g to FP32 and InputT follows the dtype tiling key.
-    // Keep only reachable H dtype combinations; retain state/gk dispatch.
-    const __gm__ ChunkGatedDeltaRuleFwdHTilingData *hTiling =
-        reinterpret_cast<const __gm__ ChunkGatedDeltaRuleFwdHTilingData *>(tiling);
-    if (hTiling->stateDataType == 2) {
-        if (hTiling->useGk) {
-            RunFwdH<InputT, float, float, TileShapes, true>(
-                k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
-                h, vNew, finalState, tiling, userWorkspace);
-        } else {
-            RunFwdH<InputT, float, float, TileShapes, false>(
-                k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
-                h, vNew, finalState, tiling, userWorkspace);
-        }
-    } else if (hTiling->useGk) {
-        RunFwdH<InputT, float, InputT, TileShapes, true>(
-            k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
-            h, vNew, finalState, tiling, userWorkspace);
-    } else {
-        RunFwdH<InputT, float, InputT, TileShapes, false>(
-            k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
-            h, vNew, finalState, tiling, userWorkspace);
-    }
+    DispatchFwdH<InputT, TileShapes>(k, w, u, gCumsumBht, gk, initialState, cuSeqlens,
+                                     chunkIndices, h, vNew, finalState, tiling, userWorkspace);
 
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
     // H publishes h/vNew through MTE3 and O first consumes them through MTE2.
@@ -383,7 +362,7 @@ __aicore__ inline void RunPhase6(
         reinterpret_cast<const __gm__ ChunkFwdOTilingData *>(tiling + oTilingOffset);
     ChunkFwdOTilingData oTiling{};
     CopyOTiling(gmOTiling, oTiling);
-    DispatchFwdO(q, k, vNew, h, gCumsumBht, cuSeqlens, chunkIndices, o,
+    DispatchFwdO<InputT>(q, k, vNew, h, gCumsumBht, cuSeqlens, chunkIndices, o,
                  userWorkspace, &oTiling);
 }
 
@@ -400,27 +379,13 @@ extern "C" __global__ __aicore__ void chunk_gated_delta_rule_fwd(
     REGISTER_TILING_DEFAULT(GDN::Arch35ChunkGatedDeltaRuleFwdTrailer);
     if (TILING_KEY_IS(1)) {
         KERNEL_TASK_TYPE(1, KERNEL_TYPE_MIX_AIC_1_2);
-        const __gm__ GDN::Arch35ChunkGatedDeltaRuleFwdTrailer *phase6 = GDN::GetPhase6Trailer(tiling);
-        if (phase6->coefficient.dtypeMode == 1) {
-            GDN::RunPhase6<bfloat16_t, Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        } else {
-            GDN::RunPhase6<half, Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        }
+        GDN::RunPhase6<DTYPE_Q, Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
+            q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
+            o, final_state, g_cumsum_bth, A, workspace, tiling);
     } else if (TILING_KEY_IS(2)) {
         KERNEL_TASK_TYPE(2, KERNEL_TYPE_MIX_AIC_1_2);
-        const __gm__ GDN::Arch35ChunkGatedDeltaRuleFwdTrailer *phase6 = GDN::GetPhase6Trailer(tiling);
-        if (phase6->coefficient.dtypeMode == 1) {
-            GDN::RunPhase6<bfloat16_t, Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        } else {
-            GDN::RunPhase6<half, Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        }
+        GDN::RunPhase6<DTYPE_Q, Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
+            q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
+            o, final_state, g_cumsum_bth, A, workspace, tiling);
     }
 }

@@ -308,7 +308,7 @@ __aicore__ inline void RunPhase6(
     }
 
     WritePublicCumsumRows(gCumsumBht, gCumsumBth, cuSeqlens, chunkIndices, abc);
-    DispatchFwdH<TileShapes>(k, w, u, gCumsumBht, gk, initialState, cuSeqlens,
+    DispatchFwdH<InputT, TileShapes>(k, w, u, gCumsumBht, gk, initialState, cuSeqlens,
                              chunkIndices, h, vNew, finalState, tiling, userWorkspace);
 
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
@@ -326,7 +326,7 @@ __aicore__ inline void RunPhase6(
         reinterpret_cast<const __gm__ ChunkFwdOTilingData *>(tiling + oTilingOffset);
     ChunkFwdOTilingData oTiling{};
     CopyOTiling(gmOTiling, oTiling);
-    DispatchFwdO(q, k, vNew, h, gCumsumBht, cuSeqlens, chunkIndices, o,
+    DispatchFwdO<InputT>(q, k, vNew, h, gCumsumBht, cuSeqlens, chunkIndices, o,
                  userWorkspace, &oTiling);
 }
 
@@ -343,27 +343,13 @@ extern "C" __global__ __aicore__ void chunk_gated_delta_rule_fwd(
     REGISTER_TILING_DEFAULT(GDN::Arch22ChunkGatedDeltaRuleFwdTrailer);
     if (TILING_KEY_IS(1)) {
         KERNEL_TASK_TYPE(1, KERNEL_TYPE_MIX_AIC_1_2);
-        const __gm__ GDN::Arch22ChunkGatedDeltaRuleFwdTrailer *phase6 = GDN::GetPhase6Trailer(tiling);
-        if (phase6->abc.dtypeMode == 1) {
-            GDN::RunPhase6<bfloat16_t, Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        } else {
-            GDN::RunPhase6<half, Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        }
+        GDN::RunPhase6<DTYPE_Q, Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
+            q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
+            o, final_state, g_cumsum_bth, A, workspace, tiling);
     } else if (TILING_KEY_IS(2)) {
         KERNEL_TASK_TYPE(2, KERNEL_TYPE_MIX_AIC_1_2);
-        const __gm__ GDN::Arch22ChunkGatedDeltaRuleFwdTrailer *phase6 = GDN::GetPhase6Trailer(tiling);
-        if (phase6->abc.dtypeMode == 1) {
-            GDN::RunPhase6<bfloat16_t, Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        } else {
-            GDN::RunPhase6<half, Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
-                q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
-                o, final_state, g_cumsum_bth, A, workspace, tiling);
-        }
+        GDN::RunPhase6<DTYPE_Q, Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
+            q, k, v, beta, raw_g, gk, initial_state, cu_seqlens, chunk_indices,
+            o, final_state, g_cumsum_bth, A, workspace, tiling);
     }
 }
