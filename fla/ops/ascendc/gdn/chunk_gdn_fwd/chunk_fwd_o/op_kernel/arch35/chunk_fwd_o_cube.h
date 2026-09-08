@@ -81,6 +81,10 @@ public:
         kGm_.SetGlobalBuffer((__gm__ Element *)k_);
         vGm_.SetGlobalBuffer((__gm__ Element *)v_);
         hGm_.SetGlobalBuffer((__gm__ Element *)h_);
+        qGm_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
+        kGm_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
+        vGm_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
+        hGm_.SetL2CacheHint(CacheMode::CACHE_MODE_DISABLE);
         if ASCEND_IS_AIC {
             SetLoadDataPaddingValue<Element>(static_cast<Element>(0));
             for (uint32_t eventIdx = 0; eventIdx < kL1EventCount; ++eventIdx) {
@@ -102,6 +106,7 @@ public:
         ChunkFwdOChunkLoc loc;
         const uint32_t headGroupNum = ChunkFwdOHeadGroupNum(tiling_);
         const uint32_t groupTaskNum = static_cast<uint32_t>(tiling_.chunkNum) * headGroupNum;
+        bool stage5GroupPending = false;
         for (uint32_t groupTaskIdx = coreIdx; groupTaskIdx < groupTaskNum; groupTaskIdx += coreNum) {
             const uint32_t loopIdx = groupTaskIdx / headGroupNum;
             const uint32_t headGroupIdx = groupTaskIdx % headGroupNum;
@@ -121,7 +126,11 @@ public:
                     const uint32_t ownerSubBlock = static_cast<uint32_t>(headOffset % 2);
                     const uint32_t localSlot = static_cast<uint32_t>(headOffset / 2);
                     ProcessStage2Head(loc, hk, hv, ownerSubBlock, localSlot, qkL1Slot,
-                                      static_cast<uint32_t>(headOffset), loadQK);
+                                      static_cast<uint32_t>(headOffset), loadQK,
+                                      stage5GroupPending && headOffset == 0);
+                    if (headOffset == 0) {
+                        stage5GroupPending = false;
+                    }
                 }
 
                 // Stage 4: keep one V head ahead so that the next GM-to-L1
@@ -162,11 +171,14 @@ public:
                     const uint32_t ownerSubBlock = computeHead % 2U;
                     const uint32_t localSlot = computeHead / 2U;
                     ProcessStage4Head(loc, ownerSubBlock, localSlot, computeHead);
+                    stage5GroupPending = true;
                 }
             }
-            Catlass::Arch::CrossCoreWaitFlag(vecToCubeFlag_);
         }
         if ASCEND_IS_AIC {
+            if (stage5GroupPending) {
+                Catlass::Arch::CrossCoreWaitFlag(vecToCubeFlag_);
+            }
             for (uint32_t eventIdx = 0; eventIdx < kL1EventCount; ++eventIdx) {
                 WaitFlag<HardEvent::MTE1_MTE2>(L1Event(eventIdx));
             }
@@ -289,7 +301,8 @@ private:
 
     __aicore__ inline void ProcessStage2Head(const ChunkFwdOChunkLoc &loc, int64_t hk, int64_t hv,
                                              uint32_t ownerSubBlock, uint32_t localSlot,
-                                             uint32_t qkL1Slot, uint32_t hL1Slot, bool loadQK)
+                                             uint32_t qkL1Slot, uint32_t hL1Slot, bool loadQK,
+                                             bool waitPreviousStage5)
     {
         const uint32_t m = kBt;
         const uint32_t mActual = static_cast<uint32_t>(loc.chunkLen);
@@ -338,6 +351,12 @@ private:
         auto tensorL1H = tla::MakeTensor(l1H, layoutL1H, Catlass::Arch::PositionL1{});
         CopyGmToL1H{}(tensorL1H, blockH);
         SetFlag<HardEvent::MTE2_MTE1>(hEvent);
+
+        // Let the next task's independent Q/K/H transfers overlap the previous
+        // task's Stage 5. Consume the ordered group token before touching L0/UB.
+        if (waitPreviousStage5) {
+            Catlass::Arch::CrossCoreWaitFlag(vecToCubeFlag_);
+        }
 
         if (loadQK) {
             WaitFlag<HardEvent::MTE2_MTE1>(qkEvent);
