@@ -322,7 +322,7 @@ jobs:
       - name: 拉取当前目标分支代码（第 1 次）
         id: checkout_pr_1
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 5
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
@@ -354,7 +354,8 @@ jobs:
           echo "all_proxy=socks5h://127.0.0.1:$SOCKS_PORT" >> $GITHUB_ENV
           
           echo "检测到代理端口: HTTP=$HTTP_PORT, SOCKS=$SOCKS_PORT"
-          
+          export HOME=${HOME:-/workspace/ci/}
+          echo "HOME=$HOME" >> $GITHUB_ENV
           # 配置 Git 代理
           git config --global http.proxy http://127.0.0.1:$HTTP_PORT
           git config --global https.proxy http://127.0.0.1:$HTTP_PORT
@@ -497,21 +498,17 @@ jobs:
           fetch-depth: 1
           path: trusted-ci
 
+      # ========== 关闭代理 ==========
       - name: 关闭代理
         if: steps.checkout_pr_1.outcome == 'failure'
         run: |
-          # 如果 proxyoff 可用
           source /etc/profile.d/vpn-proxy.sh
           proxyoff
           
-          # 或者直接 kill mihomo
-          # pkill -f mihomo || true
-          
-          # 清理 Git 代理配置（可选）
+          echo "代理已关闭"
+          # 清理 Git 代理配置
           git config --global --unset http.proxy
           git config --global --unset https.proxy
-          
-          echo "代理已关闭"
 
       - name: 使用可信 CI 脚本
         run: |
