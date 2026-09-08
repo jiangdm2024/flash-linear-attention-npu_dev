@@ -55,6 +55,9 @@
 | `betaEffOutOptional` | A5 `useExp2=true` 可选 | 与 beta 同 shape；FP32 | 非空时启用并输出 beta sigmoid |
 | `hOutOptional` | A5 `useExp2=true` 可选 | `stateVFirst=false` 时末两维为 `[K,V]`，否则为 `[V,K]`；与 q 同 dtype | 分块状态 |
 
+Python ctypes 入口通过 `disable_recompute=False` 选择训练输出，返回 `gCumsum` 和 `A`；
+设为 `True` 选择推理输出，仍返回四元组，但后两项为 `None`，底层公共输出指针也为空。
+
 ## 属性
 
 | 名称 | 当前支持范围 | 说明 |

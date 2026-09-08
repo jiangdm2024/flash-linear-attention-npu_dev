@@ -1619,7 +1619,7 @@ def npu_chunk_gated_delta_rule_fwd(
     use_gate_in_kernel=False,
     use_beta_sigmoid_in_kernel=False,
     allow_neg_eigval=False,
-    output_a=True,
+    disable_recompute=False,
     state_v_first=False,
     layout="BNSD",
 ):
@@ -1684,7 +1684,7 @@ def npu_chunk_gated_delta_rule_fwd(
     use_gate_in_kernel = _optional_bool(use_gate_in_kernel, False)
     use_beta_sigmoid_in_kernel = _optional_bool(use_beta_sigmoid_in_kernel, False)
     allow_neg_eigval = _optional_bool(allow_neg_eigval, False)
-    output_a = _optional_bool(output_a, True)
+    disable_recompute = _optional_bool(disable_recompute, False)
     state_v_first = _optional_bool(state_v_first, False)
     if use_gate_in_kernel:
         raise ValueError("use_gate_in_kernel currently only supports False.")
@@ -1697,8 +1697,16 @@ def npu_chunk_gated_delta_rule_fwd(
         raise ValueError("allow_neg_eigval=True requires use_beta_sigmoid_in_kernel=True.")
     scale = _optional_float(scale, float(k_dim) ** -0.5)
     o = _empty((batch, tokens, v_heads, v_dim), v)
-    g_cumsum = _empty((batch, tokens, v_heads), g, dtype=torch.float32)
-    A = _empty((batch, v_heads, tokens, int(chunk_size)), q)
+    g_cumsum = (
+        _empty((batch, tokens, v_heads), g, dtype=torch.float32)
+        if not disable_recompute
+        else None
+    )
+    A = (
+        _empty((batch, v_heads, tokens, int(chunk_size)), q)
+        if not disable_recompute
+        else None
+    )
     beta_eff = (
         _empty((batch, tokens, v_heads), beta, dtype=torch.float32)
         if use_beta_sigmoid_in_kernel
@@ -1743,7 +1751,7 @@ def npu_chunk_gated_delta_rule_fwd(
             ctx.tensor(None, "k_rstd"),
             ctx.tensor(beta_eff, "beta_eff"),
             ctx.tensor(g_cumsum, "g_cumsum"),
-            ctx.tensor(A if output_a else None, "A"),
+            ctx.tensor(A, "A"),
             ctx.tensor(None, "h"),
         ],
         outputs,
