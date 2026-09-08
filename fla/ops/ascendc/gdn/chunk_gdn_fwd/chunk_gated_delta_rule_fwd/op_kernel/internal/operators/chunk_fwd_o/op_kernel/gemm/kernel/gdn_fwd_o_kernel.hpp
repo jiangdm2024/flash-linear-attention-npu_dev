@@ -446,10 +446,9 @@ public:
                         gmG[vec1OffsetG], gmAttnWorkspace[vec1OffsetAttn], gmMask,
                         chunkSize, vec1Offsets.blockTokens, kHeadDim, vHeadDim, pingpongFlag, vec1Offsets.batchIdx, vec1Offsets.headIdx, vec1Offsets.chunkIdx
                     );
-                    // The AIC consumes workspace rows produced by both AIV
-                    // subblocks. Publish this generation only after both MTE3
-                    // writeback streams have completed.
+#if !defined(__CCE_AICORE__) || __CCE_AICORE__ != 310
                     Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();
+#endif
                     Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec1Done[streamId]);
                 }
 
@@ -469,9 +468,9 @@ public:
                         gmG[vec2OffsetG], gmVWorkspace[vec2OffsetVWork], gmHWorkspace[vec2OffsetHWork],
                         scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim, pingpongFlag, vec2Offsets.batchIdx, vec2Offsets.headIdx, vec2Offsets.chunkIdx
                     );
-                    // Close the shared AIV completion generation before AIC
-                    // reuses the ping-pong workspace.
+#if !defined(__CCE_AICORE__) || __CCE_AICORE__ != 310
                     Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();
+#endif
                     Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[streamId]);
                 }
                 needRun = true;

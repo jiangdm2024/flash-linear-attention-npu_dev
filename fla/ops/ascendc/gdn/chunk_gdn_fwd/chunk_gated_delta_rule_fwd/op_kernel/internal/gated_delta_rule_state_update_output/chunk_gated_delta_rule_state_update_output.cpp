@@ -42,12 +42,13 @@ __aicore__ inline void RunFwdH(GM_ADDR k, GM_ADDR w, GM_ADDR u, GM_ADDR g, GM_AD
                                GM_ADDR h, GM_ADDR vNew, GM_ADDR finalState, GM_ADDR tiling,
                                GM_ADDR userWorkspace)
 {
-    // Match the standalone FwdH compile-time mode.  Retaining the chunk-pipeline
-    // specialization in the embedded kernel changes the A5 scheduling/codegen
-    // timing even for varlen shapes whose runtime pipeline guard is false, and
-    // makes the dependent O result nondeterministic.
+#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+    using Kernel = Catlass::Gemm::Kernel::GDNFwdHKernel<
+        InputT, GT, StateT, float, TileShapes, kGated, true, false, true>;
+#else
     using Kernel = Catlass::Gemm::Kernel::GDNFwdHKernel<
         InputT, GT, StateT, float, TileShapes, kGated, true, false, false>;
+#endif
     Kernel kernel;
     kernel.Init(k, w, u, g, gk, initialState, cuSeqlens, chunkIndices, h, vNew, finalState,
                 tiling, userWorkspace);

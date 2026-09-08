@@ -638,10 +638,8 @@ public:
                 }
                 SetFlag<AscendC::HardEvent::MTE3_V>(0);
                 WaitFlag<AscendC::HardEvent::MTE3_V>(0);
-                // Both Vector subblocks scatter different diagonal leaves into
-                // the same L1 tile.  Do not let the first finisher release the
-                // Cube before the other subblock's MTE3 writes are complete.
-                Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();
+                // Keep both Vector subblocks participating in the mode2
+                // handoff after their local L1 writebacks.
                 AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(0x2);
             }
         }

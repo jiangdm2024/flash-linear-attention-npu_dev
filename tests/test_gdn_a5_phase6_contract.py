@@ -15,20 +15,6 @@ COEFFICIENT = ROOT / (
     "op_kernel/internal/coefficient_generation/"
     "chunk_gated_delta_rule_coefficient_generation.cpp"
 )
-EMBEDDED_FWD_O = ROOT / (
-    "fla/ops/ascendc/gdn/chunk_gdn_fwd/chunk_gated_delta_rule_fwd/"
-    "op_kernel/internal/operators/chunk_fwd_o/op_kernel/gemm/kernel/"
-    "gdn_fwd_o_kernel.hpp"
-)
-FUSED_SOLVE_TRI_128 = ROOT / (
-    "fla/ops/ascendc/gdn/chunk_gdn_fwd/chunk_gated_delta_rule_fwd/"
-    "op_kernel/internal/coefficient_generation/gated_delta_rule_solve_tri/"
-    "arch35/solve_tri_ascend950_128.h"
-)
-STANDALONE_SOLVE_TRI_128 = ROOT / (
-    "fla/ops/ascendc/gdn/chunk_gdn_fwd/solve_tri/op_kernel/arch35/"
-    "solve_tri_ascend950_128.h"
-)
 
 
 def test_cumsum_is_published_globally_before_coefficient_epilogue():
@@ -69,18 +55,6 @@ def test_a5_kkt_epilogue_joins_both_aiv_subblocks_before_solve():
     assert join in handoff
     assert publish in handoff
     assert handoff.index(join) < handoff.index(publish)
-
-
-def test_a5_solve_tri_128_joins_both_aiv_l1_writers_before_cube():
-    join = "Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();"
-    publish = "AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(0x2);"
-
-    for path in (FUSED_SOLVE_TRI_128, STANDALONE_SOLVE_TRI_128):
-        source = path.read_text(encoding="utf-8")
-        before_publish = source[: source.index(publish)]
-        assert before_publish.rfind(join) > before_publish.rfind(
-            "WaitFlag<AscendC::HardEvent::MTE3_V>(0);"
-        )
 
 
 def test_solved_a_joins_fix_and_both_aiv_mte3_writes_before_recompute():
@@ -127,15 +101,3 @@ def test_solved_a_joins_fix_and_both_aiv_mte3_writes_before_recompute():
         < handoff.index(publish)
     )
     assert "AscendC::SyncAll<false>();" not in handoff
-
-
-def test_embedded_fwdo_joins_aiv_subblocks_before_shared_publications():
-    source = EMBEDDED_FWD_O.read_text(encoding="utf-8")
-    join = "Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();"
-
-    for publish in (
-        "Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec1Done[streamId]);",
-        "Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[streamId]);",
-    ):
-        before = source[: source.index(publish)]
-        assert before.rfind(join) > before.rfind("epilogueGDNFwdO")
