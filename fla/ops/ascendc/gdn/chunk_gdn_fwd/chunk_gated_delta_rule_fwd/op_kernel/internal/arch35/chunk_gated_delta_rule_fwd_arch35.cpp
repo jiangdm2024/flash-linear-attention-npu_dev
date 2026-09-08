@@ -344,8 +344,29 @@ __aicore__ inline void RunPhase6(
     }
 
     WritePublicCumsumRows(gCumsumBht, gCumsumBth, cuSeqlens, chunkIndices, coefficient);
-    DispatchFwdH<TileShapes>(k, w, u, gCumsumBht, gk, initialState, cuSeqlens,
-                             chunkIndices, h, vNew, finalState, tiling, userWorkspace);
+    // Phase6 host tiling fixes g to FP32 and InputT follows the dtype tiling key.
+    // Keep only reachable H dtype combinations; retain state/gk dispatch.
+    const __gm__ ChunkGatedDeltaRuleFwdHTilingData *hTiling =
+        reinterpret_cast<const __gm__ ChunkGatedDeltaRuleFwdHTilingData *>(tiling);
+    if (hTiling->stateDataType == 2) {
+        if (hTiling->useGk) {
+            RunFwdH<InputT, float, float, TileShapes, true>(
+                k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
+                h, vNew, finalState, tiling, userWorkspace);
+        } else {
+            RunFwdH<InputT, float, float, TileShapes, false>(
+                k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
+                h, vNew, finalState, tiling, userWorkspace);
+        }
+    } else if (hTiling->useGk) {
+        RunFwdH<InputT, float, InputT, TileShapes, true>(
+            k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
+            h, vNew, finalState, tiling, userWorkspace);
+    } else {
+        RunFwdH<InputT, float, InputT, TileShapes, false>(
+            k, w, u, gCumsumBht, gk, initialState, cuSeqlens, chunkIndices,
+            h, vNew, finalState, tiling, userWorkspace);
+    }
 
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
     // H publishes h/vNew through MTE3 and O first consumes them through MTE2.
