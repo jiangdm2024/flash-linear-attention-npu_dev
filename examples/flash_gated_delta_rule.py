@@ -830,7 +830,7 @@ def flash_chunk_gated_delta_rule_fwd(
         )
         if not output_final_state:
             final_state = None
-        return g, o.transpose(1, 2).contiguous(), A, final_state
+        return g, o, A, final_state
 
     g = chunk_local_cumsum_auto(
         g=g,
