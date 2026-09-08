@@ -13,6 +13,7 @@
  */
 
 #include "chunk_fwd_o_struct.h"
+#include "chunk_fwd_o_tiling_key.h"
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
 #include "arch35/gemm/kernel/gdn_fwd_o_kernel.hpp"
 #else
@@ -58,17 +59,19 @@ __aicore__ inline void ChunkFwdOKernelImpl(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_A
     gdnFwdO.Process();
 }
 
+template <bool UseExp2>
 __aicore__ inline void ChunkFwdODispatch(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h, GM_ADDR g,
                                          GM_ADDR cuSeqlens, GM_ADDR chunkOffsets, GM_ADDR o,
                                          GM_ADDR userWorkspace, const ChunkFwdOTilingData *tilingData)
 {
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
-    if (TILING_KEY_IS(2)) {
-        ChunkFwdOA5DispatchByGateType<true>(q, k, v, h, g, cuSeqlens, chunkOffsets, o, userWorkspace, tilingData);
+    if constexpr (UseExp2) {
+        ChunkFwdOA5DispatchByGateType<UseExp2>(q, k, v, h, g, cuSeqlens, chunkOffsets, o, userWorkspace,
+                                              tilingData);
         return;
     }
 #endif
-    if (TILING_KEY_IS(1)) {
+    if constexpr (!UseExp2) {
         using WorkspaceT = float;
         if (tilingData->dataType == CHUNK_FWD_O_DTYPE_BF16) {
             if (tilingData->gDataType == CHUNK_FWD_O_DTYPE_FP32) {
@@ -93,7 +96,8 @@ __aicore__ inline void ChunkFwdODispatch(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADD
 } // namespace GDN
 
 #ifndef TORCH_MODE
-extern "C" __global__ __aicore__ void chunk_fwd_o(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h,
+template <bool USE_EXP2>
+__global__ __aicore__ void chunk_fwd_o(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h,
                                                    GM_ADDR g, GM_ADDR cu_seqlens, GM_ADDR chunk_offsets,
                                                    GM_ADDR o, GM_ADDR workspace, GM_ADDR tiling)
 {
@@ -103,6 +107,6 @@ extern "C" __global__ __aicore__ void chunk_fwd_o(GM_ADDR q, GM_ADDR k, GM_ADDR 
     REGISTER_TILING_DEFAULT(GDN::ChunkFwdOTilingData);
     GET_TILING_DATA_WITH_STRUCT(GDN::ChunkFwdOTilingData, tilingData, tiling);
 
-    GDN::ChunkFwdODispatch(q, k, v, h, g, cu_seqlens, chunk_offsets, o, user, &tilingData);
+    GDN::ChunkFwdODispatch<USE_EXP2>(q, k, v, h, g, cu_seqlens, chunk_offsets, o, user, &tilingData);
 }
 #endif
