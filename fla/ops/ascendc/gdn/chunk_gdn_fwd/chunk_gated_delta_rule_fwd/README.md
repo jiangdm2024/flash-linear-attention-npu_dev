@@ -55,8 +55,10 @@
 | `betaEffOutOptional` | A5 `useExp2=true` 可选 | 与 beta 同 shape；FP32 | 非空时启用并输出 beta sigmoid |
 | `hOutOptional` | A5 `useExp2=true` 可选 | `stateVFirst=false` 时末两维为 `[K,V]`，否则为 `[V,K]`；与 q 同 dtype | 分块状态 |
 
-Python ctypes 入口通过关键字参数 `return_aux` 控制两个辅助输出：默认值 `True` 返回
-`gCumsum` 和 `A`；设为 `False` 时仍返回四元组，但后两项为 `None`，底层公共输出指针也为空。
+Python ctypes 入口通过 `disable_recompute=False` 选择训练输出，返回 `gCumsum` 和 `A`；
+设为 `True` 选择推理输出，仍返回四元组，但后两项为 `None`，底层公共输出指针也为空。
+该参数统一替代原 `output_a` 和 `return_aux`，默认值为 `False`；不再接受这两个旧关键字。
+此开关控制辅助输出保存，不跳过前向计算所需的内部 recompute 阶段。
 
 ## 属性
 
@@ -86,7 +88,8 @@ Python ctypes 入口通过关键字参数 `return_aux` 控制两个辅助输出�
 
 A5 保留 cumsum 到系数生成的全核发布、KKT 的全 AIV 会合、Solve 到 recompute 的阶段私有
 全 AIC 会合，以及 H 到 O 的 MTE3/MTE2 全核交接。H/O/Solve 的局部交接使用原有 mode2
-完成标志；独立 H 的 partial MMAD 按实际尾块形状处理，保留避免全 L1 清零的修复。
+完成标志；融合内部 H 的 partial MMAD 按实际尾块形状处理。独立 H 的修改不包含在本 PR 中，
+其尾块清零问题另交开发责任人确认。
 
 融合 H 在定长序列上使用 `kChunkPipeline=true` 的 balanced-wave 任务分配，变长序列沿用
 原有序列调度。公共 O 头文件和 H 调度入口的相关选择由 A5 架构条件隔离，A2/A3 保留各自实现。
