@@ -137,6 +137,28 @@ class AclnnCtypesAbiTest(unittest.TestCase):
         self.assertIsNone(descriptors["g_cumsum"])
         self.assertIsNone(descriptors["A"])
 
+        captured.clear()
+        with mock.patch.object(ACLNN_CTYPES, "_empty", side_effect=fake_empty):
+            with mock.patch.object(ACLNN_CTYPES, "_empty_like", side_effect=fake_empty_like):
+                with mock.patch.object(ACLNN_CTYPES, "_call_aclnn", side_effect=fake_call_aclnn):
+                    outputs = ACLNN_CTYPES.npu_chunk_gated_delta_rule_fwd(
+                        q,
+                        q,
+                        v,
+                        g,
+                        beta,
+                        output_a=False,
+                        return_aux=True,
+                    )
+
+        descriptors = dict(
+            (name, tensor) for name, tensor, _format, _storage in captured["descriptor_metadata"]
+        )
+        self.assertIsNotNone(outputs[2])
+        self.assertIsNone(outputs[3])
+        self.assertIsNotNone(descriptors["g_cumsum"])
+        self.assertIsNone(descriptors["A"])
+
     def test_chunk_gated_delta_rule_bwd_dhu_signature_and_default_use_exp2(self):
         import inspect
 
